@@ -1,0 +1,208 @@
+# ============================================================
+# .github/workflows/ci.yml
+# Enterprise API Automation — Multi-Stage CI/CD Pipeline
+# ============================================================
+#
+# Stages
+# ------
+#  1. quality   → lint (ruff) + format check (black) + type check (mypy)
+#  2. smoke     → fastest subset (< 30 s) — gates every PR
+#  3. test      → full suite, parallel, with Allure results
+#  4. report    → Allure HTML report → GitHub Pages
+#
+# Triggers
+# --------
+#  - Push to main / develop
+#  - Pull requests → main
+#  - Manual dispatch with env selection
+#  - Scheduled nightly regression (prod)
+# ============================================================
+
+name: Enterprise API Automation CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, staging, uat, prod]
+      markers:
+        description: "Pytest markers to run (e.g. smoke, regression)"
+        required: false
+        default: "not wip"
+  schedule:
+    - cron: "0 2 * * *"   # nightly 02:00 UTC against staging
+
+env:
+  PYTHON_VERSION: "3.12"
+  DEFAULT_ENV:    "dev"
+
+# ── Cancel in-progress runs on the same branch ─────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Code Quality ────────────────────────────────────────────────────────
+  quality:
+    name: "Code Quality"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff black mypy
+      - name: Ruff lint
+        run: ruff check . --output-format=github
+      - name: Black formatting
+        run: black --check --diff .
+      - name: Type check (mypy)
+        run: mypy api/ config/ actions/ utils/ --ignore-missing-imports
+        continue-on-error: true   # non-blocking until fully annotated
+
+  # ── 2. Smoke Gate ─────────────────────────────────────────────────────────
+  smoke:
+    name: "Smoke Gate"
+    runs-on: ubuntu-latest
+    needs: quality
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Create .env
+        run: |
+          cat > .env <<EOF
+          ENV=${{ github.event.inputs.environment || env.DEFAULT_ENV }}
+          BASE_URL_DEV=${{ vars.BASE_URL_DEV || 'https://reqres.in' }}
+          BASE_URL_STAGING=${{ vars.BASE_URL_STAGING || 'https://reqres.in' }}
+          BASE_URL_UAT=${{ vars.BASE_URL_UAT || 'https://reqres.in' }}
+          BASE_URL_PROD=${{ vars.BASE_URL_PROD || 'https://reqres.in' }}
+          API_KEY=${{ secrets.API_KEY }}
+          REQUEST_TIMEOUT=30
+          MAX_RETRIES=3
+          LOG_LEVEL=INFO
+          LOG_TO_FILE=false
+          SLA_READ_MS=3000
+          SLA_WRITE_MS=5000
+          EOF
+      - name: Run smoke tests
+        run: pytest -m smoke --alluredir=allure-results -v --tb=short
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-allure-results
+          path: allure-results/
+
+  # ── 3. Full Test Suite ─────────────────────────────────────────────────────
+  test:
+    name: "Full Suite (${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Create .env
+        run: |
+          cat > .env <<EOF
+          ENV=${{ github.event.inputs.environment || env.DEFAULT_ENV }}
+          BASE_URL_DEV=${{ vars.BASE_URL_DEV || 'https://reqres.in' }}
+          BASE_URL_STAGING=${{ vars.BASE_URL_STAGING || 'https://reqres.in' }}
+          BASE_URL_UAT=${{ vars.BASE_URL_UAT || 'https://reqres.in' }}
+          BASE_URL_PROD=${{ vars.BASE_URL_PROD || 'https://reqres.in' }}
+          API_KEY=${{ secrets.API_KEY }}
+          REQUEST_TIMEOUT=30
+          MAX_RETRIES=3
+          LOG_LEVEL=DEBUG
+          LOG_TO_FILE=true
+          LOG_FILE_PATH=logs/test_run.log
+          ALLURE_RESULTS_DIR=allure-results
+          SLA_READ_MS=3000
+          SLA_WRITE_MS=5000
+          EOF
+      - name: Create output dirs
+        run: mkdir -p logs reports allure-results
+      - name: Run tests (parallel)
+        run: |
+          pytest \
+            -m "${{ github.event.inputs.markers || 'not wip' }}" \
+            -n auto \
+            --alluredir=allure-results \
+            --html=reports/report.html \
+            --self-contained-html \
+            -v
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: allure-results-${{ matrix.python-version }}
+          path: allure-results/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: html-report-${{ matrix.python-version }}
+          path: reports/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.python-version }}
+          path: logs/
+          retention-days: 7
+
+  # ── 4. Allure Report ───────────────────────────────────────────────────────
+  report:
+    name: "Publish Allure Report"
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    permissions:
+      contents: write
+      pages:    write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: allure-results-3.12
+          path: allure-results
+      - name: Install Allure CLI
+        run: |
+          wget -q https://github.com/allure-framework/allure2/releases/download/2.29.0/allure-2.29.0.tgz
+          tar -xzf allure-2.29.0.tgz -C /opt
+          ln -s /opt/allure-2.29.0/bin/allure /usr/local/bin/allure
+      - name: Generate Allure report
+        run: allure generate allure-results --clean -o allure-report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: allure-html-report
+          path: allure-report/
+          retention-days: 30
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir:  allure-report
+          destination_dir: allure-report

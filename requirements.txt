@@ -1,0 +1,35 @@
+# ============================================================
+# Enterprise API Automation Framework — Dependencies
+# ============================================================
+
+# ── Core HTTP ─────────────────────────────────────────────
+requests==2.32.3
+urllib3==2.2.3
+
+# ── Testing ───────────────────────────────────────────────
+pytest==8.3.5
+pytest-xdist==3.6.1          # parallel test execution
+pytest-timeout==2.3.1        # per-test timeout
+pytest-rerunfailures==14.0   # auto-retry flaky tests
+
+# ── Reporting ─────────────────────────────────────────────
+allure-pytest==2.13.5
+pytest-html==4.1.1
+
+# ── Schema Validation ─────────────────────────────────────
+jsonschema==4.23.0
+
+# ── Configuration ─────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Test Data Generation ──────────────────────────────────
+Faker==26.0.0
+
+# ── Logging ───────────────────────────────────────────────
+rich==13.9.4
+
+# ── Code Quality (dev) ────────────────────────────────────
+ruff==0.6.9
+black==24.10.0
+mypy==1.11.2
+pre-commit==3.8.0
