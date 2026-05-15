@@ -31,6 +31,8 @@ from config.settings import Settings
 from utils.logger import get_logger, setup_logging
 
 
+
+
 # ── Bootstrap logging before anything else ───────────────────────────────────
 def pytest_configure(config: pytest.Config) -> None:
     cfg = Settings()
@@ -39,6 +41,8 @@ def pytest_configure(config: pytest.Config) -> None:
         log_to_file=cfg.log_to_file,
         log_file_path=cfg.log_file_path,
         log_json=cfg.log_json,
+
+        #test name is not available at this point, but we can include env and other config in the log format
     )
     _write_allure_env(cfg)
 
